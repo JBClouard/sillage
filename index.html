@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0f1418">
+<title>Sillage</title>
+<style>
+  :root{color-scheme:dark;--bg:#0f1418;--card:#182027;--ink:#e8eef2;--mute:#9fb3c0;--ok:#8ff0c0;--okbg:#1d4d3a;--ko:#ffb3b3;--kobg:#5a2323;--acc:#1e6fa8}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+  header{padding:14px 16px 6px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+  h1{margin:0;font-size:20px;letter-spacing:.5px}
+  #btn{background:var(--acc);color:#fff;border:0;border-radius:12px;padding:12px 18px;font-size:16px;font-weight:600}
+  #btn.on{background:#25313a;color:var(--mute)}
+  #etat{font-size:13px;color:var(--mute);padding:0 16px 8px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:6px 12px}
+  .tile{background:var(--card);border-radius:16px;padding:14px 16px}
+  .tile.big{grid-column:1/-1;text-align:center;padding:22px 16px 18px}
+  .lbl{font-size:12px;color:var(--mute);text-transform:uppercase;letter-spacing:.6px}
+  .val{font-size:40px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1;margin-top:4px}
+  .big .val{font-size:92px}
+  .unit{font-size:16px;color:var(--mute);margin-left:6px;font-weight:400}
+  .sub{font-size:13px;color:var(--mute);margin-top:4px;font-variant-numeric:tabular-nums}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;padding:8px 12px 16px}
+  .chip{font-size:13px;padding:6px 12px;border-radius:999px;background:#25313a;color:var(--mute)}
+  .chip.on{background:var(--okbg);color:var(--ok)}.chip.off{background:var(--kobg);color:var(--ko)}
+  .stale .val{opacity:.35}
+  #aide{padding:0 16px 30px;color:var(--mute);font-size:14px;line-height:1.5}
+  #aide b{color:var(--ink)}
+</style>
+</head>
+<body>
+<header><h1>Sillage</h1><button id="btn">Connecter</button></header>
+<div id="etat">non connecté</div>
+<div class="grid" id="grid">
+  <div class="tile big"><div class="lbl">vitesse air</div><div class="val"><span id="va">–</span><span class="unit">km/h</span></div><div class="sub">moyenne 10 s : <span id="va10">–</span> km/h</div></div>
+  <div class="tile"><div class="lbl">puissance</div><div class="val"><span id="pw">–</span><span class="unit">W</span></div><div class="sub">10 s : <span id="pw10">–</span> W</div></div>
+  <div class="tile"><div class="lbl">cadence</div><div class="val"><span id="cad">–</span><span class="unit">tr/min</span></div><div class="sub">&nbsp;</div></div>
+  <div class="tile"><div class="lbl">Δp sonde</div><div class="val"><span id="dp">–</span><span class="unit">Pa</span></div><div class="sub">&nbsp;</div></div>
+  <div class="tile"><div class="lbl">pression</div><div class="val"><span id="p">–</span><span class="unit">hPa</span></div><div class="sub">&nbsp;</div></div>
+</div>
+<div class="chips"><span class="chip" id="cboite">boîte</span><span class="chip" id="cped">pédale</span></div>
+<div id="aide">
+  <p><b>Comment ça marche.</b> La boîte Sillage s'annonce en Bluetooth. Appuie sur <b>Connecter</b>, choisis « Sillage » dans la liste, et les valeurs arrivent deux fois par seconde, sans WiFi.</p>
+  <p id="support"></p>
+</div>
+<script>
+const SVC='7a3c0001-5a6e-4f8b-9c2d-53494c4c4147';
+const CH_BIN='7a3c0003-5a6e-4f8b-9c2d-53494c4c4147';
+const CH_TXT='7a3c0002-5a6e-4f8b-9c2d-53494c4c4147';
+const $=id=>document.getElementById(id);
+const K_PROBE=1.36;                       // affichage seulement, même valeur que la boîte
+let dev=null, chr=null, lastMs=0, wantConnect=false, wake=null;
+const hist=[];                            // {t, va, pw} des 10 dernières secondes
+const etatPed=['éteinte','recherche…','connexion…','connectée','perdue'];
+
+if(!navigator.bluetooth){
+  $('support').innerHTML='<b>Ce navigateur ne parle pas Bluetooth.</b> Sur iPhone, ouvre cette page dans l\'application <b>Bluefy</b> (gratuite). Sur Android, dans <b>Chrome</b>.';
+  $('btn').disabled=true;
+}
+
+function setEtat(t,ok){ $('etat').textContent=t; $('cboite').className='chip '+(ok?'on':'off'); $('cboite').textContent=ok?'boîte connectée':'boîte'; }
+
+function show(d){
+  lastMs=Date.now();
+  $('grid').classList.remove('stale');
+  $('va').textContent=d.va.toFixed(1);
+  $('dp').textContent=d.dp.toFixed(1);
+  $('p').textContent=d.p>30000?(d.p/100).toFixed(1):'–';
+  const ped=d.state===3;
+  $('pw').textContent=ped?d.pw:'–';
+  $('cad').textContent=ped?(d.cad10/10).toFixed(0):'–';
+  $('cped').className='chip '+(ped?'on':'off'); $('cped').textContent='pédale '+(etatPed[d.state]||'?');
+  const now=Date.now(); hist.push({t:now,va:d.va,pw:ped?d.pw:null});
+  while(hist.length&&now-hist[0].t>10000) hist.shift();
+  const vas=hist.map(h=>h.va), pws=hist.filter(h=>h.pw!==null).map(h=>h.pw);
+  $('va10').textContent=vas.length?(vas.reduce((a,b)=>a+b,0)/vas.length).toFixed(1):'–';
+  $('pw10').textContent=pws.length?(pws.reduce((a,b)=>a+b,0)/pws.length).toFixed(0):'–';
+}
+
+// paquet binaire : u32 t_ms | f32 dp | f32 va_kmh | f32 p_pa | i16 W | u16 cad×10 | u8 état, petit-boutiste
+function parseBin(v){
+  if(v.byteLength<21) return null;
+  return {t:v.getUint32(0,true), dp:v.getFloat32(4,true), va:v.getFloat32(8,true), p:v.getFloat32(12,true),
+          pw:v.getInt16(16,true), cad10:v.getUint16(18,true), state:v.getUint8(20)};
+}
+function onBin(e){ const d=parseBin(e.target.value); if(d) show(d); }
+
+async function connect(){
+  try{
+    if(!dev){
+      setEtat('choisis « Sillage » dans la liste…',false);
+      dev=await navigator.bluetooth.requestDevice({filters:[{services:[SVC]}],optionalServices:[SVC]});
+      dev.addEventListener('gattserverdisconnected',()=>{ setEtat('liaison perdue, je réessaie…',false); $('grid').classList.add('stale'); if(wantConnect) setTimeout(connect,1500); });
+    }
+    setEtat('connexion…',false);
+    const server=await dev.gatt.connect();
+    const svc=await server.getPrimaryService(SVC);
+    chr=await svc.getCharacteristic(CH_BIN);
+    chr.addEventListener('characteristicvaluechanged',onBin);
+    await chr.startNotifications();
+    setEtat('en direct · '+(dev.name||'Sillage'),true);
+    $('btn').textContent='Déconnecter'; $('btn').className='on';
+    try{ if(navigator.wakeLock&&!wake) wake=await navigator.wakeLock.request('screen'); }catch(e){}
+  }catch(err){
+    setEtat('échec : '+(err.message||err),false);
+    if(wantConnect&&dev) setTimeout(connect,2000);
+  }
+}
+function disconnect(){
+  wantConnect=false;
+  try{ if(dev&&dev.gatt.connected) dev.gatt.disconnect(); }catch(e){}
+  setEtat('non connecté',false); $('btn').textContent='Connecter'; $('btn').className=''; $('grid').classList.add('stale');
+}
+$('btn').onclick=()=>{ if(wantConnect){ disconnect(); } else { wantConnect=true; connect(); } };
+
+// si plus rien n'arrive pendant 3 s, on grise les chiffres plutôt que d'afficher du périmé
+setInterval(()=>{ if(lastMs&&Date.now()-lastMs>3000) $('grid').classList.add('stale'); },1000);
+</script>
+</body>
+</html>
