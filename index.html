@@ -33,7 +33,7 @@
 </style>
 </head>
 <body>
-<header><h1>Sillage</h1><button id="btn">Connecter</button></header>
+<header><h1>Sillage</h1><div style="display:flex;gap:8px"><button id="wifi" style="display:none;background:#25313a;color:#9fb3c0;border:0;border-radius:12px;padding:12px 14px;font-size:15px">WiFi</button><button id="btn">Connecter</button></div></header>
 <div id="etat">non connecté</div>
 <div class="grid" id="grid">
   <div class="tile big"><div class="lbl">vitesse air</div><div class="val"><span id="va">–</span><span class="unit">km/h</span></div><div class="sub">moyenne 10 s : <span id="va10">–</span> km/h</div></div>
@@ -41,9 +41,10 @@
   <div class="tile"><div class="lbl">cadence</div><div class="val"><span id="cad">–</span><span class="unit">tr/min</span></div><div class="sub">&nbsp;</div></div>
   <div class="tile"><div class="lbl">vitesse sol</div><div class="val"><span id="vs">–</span><span class="unit">km/h</span></div><div class="sub">capteur de roue</div></div>
   <div class="tile"><div class="lbl">Δp sonde</div><div class="val"><span id="dp">–</span><span class="unit">Pa</span></div><div class="sub">moyenne 0,5 s</div></div>
-  <div class="tile big" style="padding:12px 16px"><div class="lbl">pression</div><div class="val" style="font-size:28px"><span id="p">–</span><span class="unit">hPa</span></div></div>
+  <div class="tile"><div class="lbl">pression</div><div class="val" style="font-size:28px"><span id="p">–</span><span class="unit">hPa</span></div></div>
+  <div class="tile"><div class="lbl">batterie</div><div class="val" style="font-size:28px"><span id="bat">–</span><span class="unit">%</span></div></div>
 </div>
-<div class="chips"><span class="chip" id="cboite">boîte</span><span class="chip" id="cped">pédale</span><span class="chip" id="cspd">roue</span></div>
+<div class="chips"><span class="chip" id="cboite">boîte</span><span class="chip" id="cped">pédale</span><span class="chip" id="cspd">roue</span><span class="chip" id="csd">SD</span><span class="chip" id="cdp">Δp</span><span class="chip" id="cwifi" style="display:none">WiFi</span></div>
 <div id="aide">
   <p><b>Comment ça marche.</b> La boîte Sillage s'annonce en Bluetooth. Appuie sur <b>Connecter</b>, choisis « Sillage » dans la liste, et les valeurs arrivent deux fois par seconde, sans WiFi.</p>
   <p id="support"></p>
@@ -52,6 +53,8 @@
 const SVC='7a3c0001-5a6e-4f8b-9c2d-53494c4c4147';
 const CH_BIN='7a3c0003-5a6e-4f8b-9c2d-53494c4c4147';
 const CH_TXT='7a3c0002-5a6e-4f8b-9c2d-53494c4c4147';
+const CH_CMD='7a3c0004-5a6e-4f8b-9c2d-53494c4c4147';
+let cmdChr=null;
 const $=id=>document.getElementById(id);
 const K_PROBE=1.36;                       // affichage seulement, même valeur que la boîte
 let dev=null, chr=null, lastMs=0, wantConnect=false, wake=null;
@@ -68,7 +71,7 @@ function setEtat(t,ok){ $('etat').textContent=t; $('cboite').className='chip '+(
 function show(d){
   lastMs=Date.now();
   $('grid').classList.remove('stale');
-  $('va').textContent=d.va.toFixed(1);
+  $('va').textContent=(d.dp<1?0:d.va).toFixed(1);
   $('dp').textContent=d.dp.toFixed(1);
   $('p').textContent=d.p>30000?(d.p/100).toFixed(1):'–';
   const ped=d.state===3;
@@ -77,6 +80,13 @@ function show(d){
   $('cped').className='chip '+(ped?'on':'off'); $('cped').textContent='pédale '+(etatPed[d.state]||'?');
   const roue=d.spdState===3; $('vs').textContent=roue?(d.spd/100).toFixed(1):'–';
   $('cspd').className='chip '+(roue?'on':'off'); $('cspd').textContent='roue '+(etatPed[d.spdState]||'?');
+  // V3.4 : batterie et alertes (bit0 SD ok, bit1 Δp saturé, bit2 WiFi, bit3 SD perdue, bit4 batterie non mesurée)
+  const f=d.flags||0;
+  $('bat').textContent=(d.batt!==undefined&&d.batt<=100)?d.batt:'–';
+  $('csd').className='chip '+((f&8)?'off':(f&1)?'on':'off'); $('csd').textContent=(f&8)?'SD perdue, remontage…':(f&1)?'SD enregistre':'SD en pause';
+  $('cdp').className='chip '+((f&2)?'off':'on'); $('cdp').textContent=(f&2)?'Δp saturé (eau ?)':'Δp ok';
+  $('cwifi').style.display=''; $('cwifi').className='chip '+((f&4)?'on':''); $('cwifi').textContent=(f&4)?'WiFi allumé':'WiFi éteint';
+  $('wifi').textContent=(f&4)?'WiFi off':'WiFi on';
   const now=Date.now(); hist.push({t:now,va:d.va,pw:ped?d.pw:null});
   while(hist.length&&now-hist[0].t>10000) hist.shift();
   const vas=hist.map(h=>h.va), pws=hist.filter(h=>h.pw!==null).map(h=>h.pw);
@@ -91,6 +101,7 @@ function parseBin(v){
   const d={t:v.getUint32(0,true), dp:v.getFloat32(4,true), va:v.getFloat32(8,true), p:v.getFloat32(12,true),
            pw:v.getInt16(16,true), cad10:v.getUint16(18,true), state:v.getUint8(20), spd:0, spdState:0};
   if(v.byteLength>=24){ d.spd=v.getUint16(21,true); d.spdState=v.getUint8(23); }
+  if(v.byteLength>=26){ d.batt=v.getUint8(24); d.flags=v.getUint8(25); }
   return d;
 }
 function onBin(e){ const d=parseBin(e.target.value); if(d) show(d); }
@@ -108,6 +119,7 @@ async function connect(){
     chr=await svc.getCharacteristic(CH_BIN);
     chr.addEventListener('characteristicvaluechanged',onBin);
     await chr.startNotifications();
+    try{ cmdChr=await svc.getCharacteristic(CH_CMD); $('wifi').style.display=''; }catch(e){ cmdChr=null; }
     setEtat('en direct · '+(dev.name||'Sillage'),true);
     $('btn').textContent='Déconnecter'; $('btn').className='on';
     try{ if(navigator.wakeLock&&!wake) wake=await navigator.wakeLock.request('screen'); }catch(e){}
@@ -122,6 +134,8 @@ function disconnect(){
   setEtat('non connecté',false); $('btn').textContent='Connecter'; $('btn').className=''; $('grid').classList.add('stale');
 }
 $('btn').onclick=()=>{ if(wantConnect){ disconnect(); } else { wantConnect=true; connect(); } };
+// bouton WiFi : demande à la boîte d'allumer (ou d'éteindre) son WiFi, pour récupérer les fichiers
+$('wifi').onclick=async()=>{ if(!cmdChr) return; try{ await cmdChr.writeValue(new TextEncoder().encode('wifi')); setEtat('commande WiFi envoyée',true); }catch(e){ setEtat('commande refusée : '+e.message,true); } };
 
 // si plus rien n'arrive pendant 3 s, on grise les chiffres plutôt que d'afficher du périmé
 setInterval(()=>{ if(lastMs&&Date.now()-lastMs>3000) $('grid').classList.add('stale'); },1000);
